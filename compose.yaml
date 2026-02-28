@@ -1,0 +1,122 @@
+version: '3.8'
+
+services:
+  postgres-db-1:
+    image: postgres:16-alpine
+    container_name: postgres-business
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER_BUSINESS}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_BUSINESS}
+      POSTGRES_DB: ${POSTGRES_DB_BUSINESS}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_business:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER_BUSINESS -d $POSTGRES_DB_BUSINESS -h localhost -p 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: ${RESTART_POLICY:-no}
+
+
+  postgres-db-2:
+    image: postgres:16-alpine
+    container_name: postgres_chat
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER_CHAT}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_CHAT}
+      POSTGRES_DB: ${POSTGRES_DB_CHAT}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data_chat:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER_CHAT -d $POSTGRES_DB_CHAT -h localhost -p 5433"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: ${RESTART_POLICY:-no}
+
+  etcd:
+    container_name: milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.18
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=${ETCD_AUTO_COMPACTION_MODE}
+      - ETCD_AUTO_COMPACTION_RETENTION=${ETCD_AUTO_COMPACTION_RETENTION}
+      - ETCD_QUOTA_BACKEND_BYTES=${ETCD_QUOTA_BACKEND_BYTES}
+      - ETCD_SNAPSHOT_COUNT=${ETCD_SNAPSHOT_COUNT}
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: ${RESTART_POLICY:-no}
+
+  minio:
+    container_name: milvus-minio
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: ${RESTART_POLICY:-no}
+
+  standalone:
+    container_name: milvus-standalone
+    image: milvusdb/milvus:v2.6.2
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+    - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY_ID}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_ACCESS_KEY}
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - "etcd"
+      - "minio"
+    restart: ${RESTART_POLICY:-no}
+
+  attu:
+    image: zilliz/attu:v2.6
+    container_name: attu
+    restart: ${RESTART_POLICY:-no}
+    ports:
+      - "8001:3000"
+    environment:
+      MILVUS_URL: "http://milvus-standalone:19530"
+    depends_on:
+      - standalone
+
+volumes:
+  postgres_data_business:
+  postgres_data_chat:
+
+networks:
+  default:
+    name: milvus
